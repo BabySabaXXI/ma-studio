@@ -18,21 +18,16 @@ interface MaElectronAPI {
   midi: {
     getInputs: () => Promise<MidiPort[]>;
     getOutputs: () => Promise<MidiPort[]>;
-    openInput: (name: string) => Promise<boolean>;
-    openOutput: (name: string) => Promise<boolean>;
-    send: (port: string, data: number[]) => Promise<void>;
+    openInput: (name: string) => Promise<{ ok: boolean; error?: string }>;
+    openOutput: (name: string) => Promise<{ ok: boolean; error?: string }>;
+    send: (port: string, data: number[]) => Promise<{ ok: boolean; error?: string }>;
     onMessage: (callback: (data: MidiMessage) => void) => () => void;
   };
 
   ableton: {
-    generateSet: (config: AbletonSetConfig) => Promise<string>;
-    openInAbleton: (path: string) => Promise<void>;
-    getTemplates: () => Promise<SessionTemplate[]>;
-  };
-
-  ai: {
-    suggest: (prompt: string, context?: Record<string, unknown>) => Promise<AISuggestion>;
-    analyzeAudio: (path: string) => Promise<AudioAnalysis>;
+    writeFile: (filePath: string, data: number[]) => Promise<{ ok: boolean; path?: string; error?: string }>;
+    openInAbleton: (path: string) => Promise<{ ok: boolean; error?: string }>;
+    getTemplates: () => Promise<Array<{ id: string; name: string; bpm: number }>>;
   };
 
   platform: string;
@@ -47,13 +42,11 @@ interface MidiPort {
 }
 
 interface MidiMessage {
-  port: string;
   channel: number;
-  type: 'noteon' | 'noteoff' | 'cc' | 'pitchbend' | 'aftertouch';
+  type: 'noteOn' | 'noteOff' | 'cc' | 'other';
   note?: number;
   velocity?: number;
-  controller?: number;
-  value?: number;
+  raw: number[];
 }
 
 interface AbletonSetConfig {
@@ -84,23 +77,6 @@ interface SessionTemplate {
   bpm: number;
   tracks: TrackConfig[];
   tags: string[];
-}
-
-interface AISuggestion {
-  text: string;
-  suggestions: Array<{
-    type: 'arrangement' | 'chord' | 'rhythm' | 'mixing' | 'general';
-    content: string;
-    confidence: number;
-  }>;
-}
-
-interface AudioAnalysis {
-  bpm: number;
-  key: string;
-  duration: number;
-  genre: string[];
-  mood: string[];
 }
 
 interface Window {

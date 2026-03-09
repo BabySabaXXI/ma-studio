@@ -1,6 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/cn';
+import { generateAbletonSet } from '@/lib/ableton/als-generator';
+import type { GeneratedSession } from '@/lib/ai/session-generator';
 
 interface Track {
   id: string;
@@ -13,6 +15,7 @@ interface Track {
   solo: boolean;
   armed: boolean;
   samples: string[];
+  instrument?: string;
 }
 
 const TE_COLORS = ['#ff6a00', '#00d4aa', '#3388ff', '#ffcc00', '#ff3333', '#a855f7', '#ededed', '#5a5a5a'];
@@ -24,12 +27,41 @@ const DEFAULT_TRACKS: Track[] = [
   { id: '4', name: 'SAMPLE', type: 'audio', color: TE_COLORS[3], volume: 0.5, pan: 0.15, mute: false, solo: false, armed: false, samples: [] },
 ];
 
-export function SessionView() {
+interface SessionViewProps {
+  consumePendingSession?: () => GeneratedSession | null;
+}
+
+export function SessionView({ consumePendingSession }: SessionViewProps) {
   const [sessionName, setSessionName] = useState('UNTITLED');
   const [bpm, setBpm] = useState(85);
   const [tracks, setTracks] = useState<Track[]>(DEFAULT_TRACKS);
   const [selectedTrack, setSelectedTrack] = useState<string | null>('1');
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Apply pending AI-generated session
+  useEffect(() => {
+    const session = consumePendingSession?.();
+    if (session) {
+      setSessionName(session.name);
+      setBpm(session.bpm);
+      setTracks(
+        session.tracks.map((t, i) => ({
+          id: String(Date.now() + i),
+          name: t.name,
+          type: t.type,
+          color: TE_COLORS[i % TE_COLORS.length],
+          volume: t.volume,
+          pan: t.pan,
+          mute: false,
+          solo: false,
+          armed: false,
+          samples: [],
+          instrument: t.instrument,
+        })),
+      );
+      setSelectedTrack(null);
+    }
+  }, [consumePendingSession]);
 
   const waveformData = useMemo(() =>
     tracks.map((t) => ({
@@ -71,6 +103,8 @@ export function SessionView() {
     );
   };
 
+  const [exporting, setExporting] = useState(false);
+
   const handleExport = async () => {
     if (!window.ma) return;
     const result = await window.ma.saveFile({
@@ -78,6 +112,45 @@ export function SessionView() {
       defaultPath: `${sessionName}.als`,
     });
     if (result.canceled || !result.filePath) return;
+
+    setExporting(true);
+    try {
+      // Convert UI tracks to AbletonSetConfig
+      const config: AbletonSetConfig = {
+        name: sessionName,
+        bpm,
+        timeSignature: [4, 4],
+        tracks: tracks.map((t, i) => ({
+          name: t.name,
+          type: t.type,
+          color: i,
+          volume: t.volume,
+          pan: t.pan,
+          mute: t.mute,
+          solo: t.solo,
+          samples: t.samples,
+        })),
+        outputPath: result.filePath,
+      };
+
+      // Generate .als bytes in renderer
+      const data = await generateAbletonSet(config);
+
+      // Write to disk via main process
+      const writeResult = await window.ma.ableton.writeFile(
+        result.filePath,
+        Array.from(data),
+      );
+
+      if (writeResult.ok) {
+        // Auto-open in Ableton
+        await window.ma.ableton.openInAbleton(result.filePath);
+      }
+    } catch (err) {
+      console.error('Export failed:', err);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -142,9 +215,10 @@ export function SessionView() {
 
         <button
           onClick={handleExport}
-          className="te-btn text-3xs"
+          disabled={exporting}
+          className={cn('te-btn text-3xs', exporting && 'opacity-50')}
         >
-          EXPORT .ALS
+          {exporting ? 'EXPORTING...' : 'EXPORT .ALS'}
         </button>
       </div>
 

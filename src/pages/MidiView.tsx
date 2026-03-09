@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/cn';
 
@@ -15,21 +15,23 @@ interface MidiActivity {
   type: string;
   note?: number;
   velocity?: number;
-  controller?: number;
-  value?: number;
+  raw?: number[];
+  timestamp: number;
 }
 
-const MOCK_DEVICES: MidiDevice[] = [
-  { id: '1', name: 'MPK Mini MK3', type: 'input', connected: true, manufacturer: 'Akai' },
-  { id: '2', name: 'MPK Mini MK3', type: 'output', connected: true, manufacturer: 'Akai' },
-];
+interface MidiMapping {
+  id: string;
+  param: string;
+  cc: string;
+  source: string;
+}
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 function noteToName(note: number): string {
   return `${NOTE_NAMES[note % 12]}${Math.floor(note / 12) - 1}`;
 }
 
-const MAPPINGS = [
+const DEFAULT_MAPPINGS: MidiMapping[] = [
   { id: 'vol-1', param: 'CH1 VOLUME', cc: 'CC 01', source: 'KNOB 1' },
   { id: 'vol-2', param: 'CH2 VOLUME', cc: 'CC 02', source: 'KNOB 2' },
   { id: 'vol-3', param: 'CH3 VOLUME', cc: 'CC 03', source: 'KNOB 3' },
@@ -37,23 +39,95 @@ const MAPPINGS = [
   { id: 'trig-1', param: 'PAD BANK A', cc: 'N 36-43', source: 'PADS 1-8' },
 ];
 
+const MAX_ACTIVITY = 50;
+
 export function MidiView() {
-  const [devices] = useState<MidiDevice[]>(MOCK_DEVICES);
-  const [activity] = useState<MidiActivity[]>([]);
+  const [devices, setDevices] = useState<MidiDevice[]>([]);
+  const [activity, setActivity] = useState<MidiActivity[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [learnMode, setLearnMode] = useState(false);
   const [selectedMapping, setSelectedMapping] = useState<string | null>(null);
+  const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
+  const unsubRef = useRef<(() => void) | null>(null);
 
-  const handleScan = () => {
+  const handleMidiMessage = useCallback((data: MidiMessage) => {
+    const msg: MidiActivity = {
+      channel: data.channel,
+      type: data.type,
+      note: data.note,
+      velocity: data.velocity,
+      raw: data.raw,
+      timestamp: Date.now(),
+    };
+    setActivity((prev) => [msg, ...prev].slice(0, MAX_ACTIVITY));
+
+    // Track active notes for keyboard visualization
+    if (data.type === 'noteOn' && data.velocity && data.velocity > 0 && data.note !== undefined) {
+      setActiveNotes((prev) => new Set([...prev, data.note!]));
+    } else if ((data.type === 'noteOff' || (data.type === 'noteOn' && data.velocity === 0)) && data.note !== undefined) {
+      setActiveNotes((prev) => {
+        const next = new Set(prev);
+        next.delete(data.note!);
+        return next;
+      });
+    }
+  }, []);
+
+  const handleScan = async () => {
+    if (!window.ma) return;
     setIsScanning(true);
-    setTimeout(() => setIsScanning(false), 2000);
+
+    try {
+      const [inputs, outputs] = await Promise.all([
+        window.ma.midi.getInputs(),
+        window.ma.midi.getOutputs(),
+      ]);
+
+      const all: MidiDevice[] = [
+        ...inputs.map((d) => ({ ...d, type: 'input' as const })),
+        ...outputs.map((d) => ({ ...d, type: 'output' as const })),
+      ];
+      setDevices(all);
+
+      // Auto-open all inputs for monitoring
+      if (unsubRef.current) {
+        unsubRef.current();
+        unsubRef.current = null;
+      }
+
+      for (const input of inputs) {
+        await window.ma.midi.openInput(input.name);
+      }
+
+      unsubRef.current = window.ma.midi.onMessage(handleMidiMessage);
+    } catch (err) {
+      console.error('MIDI scan failed:', err);
+    } finally {
+      setIsScanning(false);
+    }
   };
+
+  // Auto-scan on mount
+  useEffect(() => {
+    handleScan();
+    return () => {
+      if (unsubRef.current) {
+        unsubRef.current();
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="h-full flex flex-col">
       {/* Header strip */}
       <div className="h-9 shrink-0 border-b border-ma-border/40 flex items-center px-3 gap-3 bg-ma-surface/50">
         <span className="text-xs font-mono font-bold text-ma-foreground tracking-wider">MIDI</span>
+        {devices.length > 0 && (
+          <div className="flex items-center gap-1">
+            <div className="led led-on" />
+            <span className="text-3xs font-mono text-ma-mint/50">{devices.length} PORT{devices.length !== 1 ? 'S' : ''}</span>
+          </div>
+        )}
         <div className="flex-1" />
         <button onClick={handleScan} disabled={isScanning} className="te-btn text-3xs">
           {isScanning ? 'SCANNING...' : 'SCAN'}
@@ -118,7 +192,7 @@ export function MidiView() {
           </div>
 
           <div className="te-display">
-            {MAPPINGS.map((mapping) => (
+            {DEFAULT_MAPPINGS.map((mapping) => (
               <div
                 key={mapping.id}
                 onClick={() => setSelectedMapping(selectedMapping === mapping.id ? null : mapping.id)}
@@ -140,7 +214,17 @@ export function MidiView() {
 
         {/* Monitor */}
         <div>
-          <div className="section-label mb-2">MONITOR</div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="section-label">MONITOR</span>
+            {activity.length > 0 && (
+              <button
+                onClick={() => setActivity([])}
+                className="text-3xs font-mono text-ma-muted/30 hover:text-ma-muted transition-colors"
+              >
+                CLEAR
+              </button>
+            )}
+          </div>
           <div className="te-display h-28 overflow-y-auto">
             {activity.length === 0 ? (
               <div className="h-full flex items-center justify-center">
@@ -150,11 +234,9 @@ export function MidiView() {
               activity.map((msg, i) => (
                 <div key={i} className="flex gap-2 text-3xs font-mono text-ma-muted/50 py-0.5">
                   <span className="text-ma-muted/20 w-6">CH{msg.channel}</span>
-                  <span className="text-ma-orange/50 w-10">{msg.type}</span>
+                  <span className="text-ma-orange/50 w-12">{msg.type.toUpperCase()}</span>
                   {msg.note !== undefined && <span className="w-8">{noteToName(msg.note)}</span>}
                   {msg.velocity !== undefined && <span className="text-ma-muted/30">V{msg.velocity}</span>}
-                  {msg.controller !== undefined && <span className="w-8">CC{msg.controller}</span>}
-                  {msg.value !== undefined && <span className="text-ma-muted/30">{msg.value}</span>}
                 </div>
               ))
             )}
@@ -166,15 +248,23 @@ export function MidiView() {
           <div className="section-label mb-2">KEYBOARD</div>
           <div className="flex h-12 gap-px">
             {Array.from({ length: 25 }, (_, i) => {
+              const midiNote = 48 + i; // C3 to C5
               const isBlack = [1, 3, 6, 8, 10].includes(i % 12);
+              const isActive = activeNotes.has(midiNote);
               return (
                 <div
                   key={i}
                   className={cn(
                     'transition-colors duration-75',
                     isBlack
-                      ? 'w-2.5 h-7 bg-ma-bg border border-ma-border/30 -mx-1 z-10 relative'
-                      : 'flex-1 h-12 bg-ma-elevated border border-ma-border/20 hover:bg-ma-orange/10',
+                      ? cn(
+                          'w-2.5 h-7 border -mx-1 z-10 relative',
+                          isActive ? 'bg-ma-orange border-ma-orange/60' : 'bg-ma-bg border-ma-border/30',
+                        )
+                      : cn(
+                          'flex-1 h-12 border border-ma-border/20',
+                          isActive ? 'bg-ma-orange/30' : 'bg-ma-elevated hover:bg-ma-orange/10',
+                        ),
                   )}
                 />
               );

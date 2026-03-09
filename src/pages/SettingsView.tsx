@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/cn';
+import { aiClient } from '@/lib/ai/ai-client';
 
 interface Settings {
   apiKey: string;
@@ -19,9 +20,26 @@ const DEFAULT_SETTINGS: Settings = {
   autoScanMidi: true,
 };
 
+function loadSettings(): Settings {
+  const stored = localStorage.getItem('ma-settings');
+  if (stored) {
+    try { return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) }; } catch {}
+  }
+  // Load API key from separate storage (shared with MentorView)
+  const apiKey = localStorage.getItem('ma-api-key') || '';
+  return { ...DEFAULT_SETTINGS, apiKey };
+}
+
 export function SettingsView() {
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<Settings>(loadSettings);
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    // Restore API key on mount
+    if (settings.apiKey) {
+      aiClient.setApiKey(settings.apiKey);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -29,6 +47,17 @@ export function SettingsView() {
   };
 
   const handleSave = () => {
+    // Persist all settings
+    localStorage.setItem('ma-settings', JSON.stringify(settings));
+
+    // API key also stored separately for MentorView
+    if (settings.apiKey) {
+      localStorage.setItem('ma-api-key', settings.apiKey);
+      aiClient.setApiKey(settings.apiKey);
+    } else {
+      localStorage.removeItem('ma-api-key');
+    }
+
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };

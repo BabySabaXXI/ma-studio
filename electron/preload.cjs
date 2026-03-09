@@ -27,15 +27,9 @@ contextBridge.exposeInMainWorld('ma', {
 
   // Ableton
   ableton: {
-    generateSet: (config) => ipcRenderer.invoke('ableton:generateSet', config),
+    writeFile: (filePath, dataArray) => ipcRenderer.invoke('ableton:writeFile', filePath, dataArray),
     openInAbleton: (path) => ipcRenderer.invoke('ableton:openInAbleton', path),
     getTemplates: () => ipcRenderer.invoke('ableton:getTemplates'),
-  },
-
-  // AI
-  ai: {
-    suggest: (prompt, context) => ipcRenderer.invoke('ai:suggest', prompt, context),
-    analyzeAudio: (path) => ipcRenderer.invoke('ai:analyzeAudio', path),
   },
 
   // Platform
